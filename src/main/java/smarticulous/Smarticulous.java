@@ -84,8 +84,51 @@ public class Smarticulous {
      * @throws SQLException
      */
     public Connection openDB(String dburl) throws SQLException {
-        // TODO: Implement
-        return null;
+        // get sqlite connection
+        db = DriverManager.getConnection(dburl);
+
+        Statement stmt = db.createStatement();
+
+        String sql = "CREATE TABLE IF NOT EXISTS User (" +
+            "UserId INTEGER PRIMARY KEY, " +
+            "Username TEXT UNIQUE, " +
+            "Firstname TEXT, " +
+            "Lastname TEXT, " +
+            "Password TEXT);";
+        stmt.execute(sql);
+
+        sql = "CREATE TABLE IF NOT EXISTS Exercise (" +
+            "ExerciseId INTEGER PRIMARY KEY, " +
+            "Name TEXT, " +
+            "DueDate INTEGER);";
+        stmt.execute(sql);
+
+        sql = "CREATE TABLE IF NOT EXISTS Question (" +
+            "ExerciseId INTEGER, " +
+            "QuestionId INTEGER, " +
+            "Name TEXT, " +
+            "Desc TEXT, " +
+            "Points INTEGER, " +
+            "PRIMARY KEY(ExerciseId, QuestionId));";
+        stmt.execute(sql);
+
+        sql = "CREATE TABLE IF NOT EXISTS Submission (" +
+            "SubmissionId INTEGER PRIMARY KEY, " +
+            "UserId INTEGER, " +
+            "ExerciseId INTEGER, " +
+            "SubmissionTime INTEGER);";
+        stmt.execute(sql);
+
+        sql = "CREATE TABLE IF NOT EXISTS QuestionGrade (" +
+            "SubmissionId INTEGER, " +
+            "QuestionId INTEGER, " +
+            "Grade REAL, " +
+            "PRIMARY KEY(SubmissionId, QuestionId));";
+        stmt.execute(sql);
+
+        stmt.close();
+
+        return db;
     }
 
 
@@ -115,10 +158,31 @@ public class Smarticulous {
      * @throws SQLException
      */
     public int addOrUpdateUser(User user, String password) throws SQLException {
-        // TODO: Implement
+        Statement stmt = this.db.createStatement();
+
+        // Escape the username to prevent SQL injection
+        String getUserSql = "SELECT * FROM User WHERE Username='" + user.username + "'";
+
+        ResultSet users = stmt.executeQuery(getUserSql);
+        if (users.next()) { // user exists, do update
+            String updateUserSql = "UPDATE User SET Firstname='" + user.firstname +
+                "', Lastname='" + user.lastname + "', Password='" + password +
+                "' WHERE Username='" + user.username + "'";
+            stmt.executeUpdate(updateUserSql);
+        } else { // user does not exist, insert
+            String insertUserSql = "INSERT INTO User(Username, Firstname, Lastname, Password) " +
+                "VALUES('" + user.username + "','" + user.firstname + "','" + user.lastname + "','" + password + "')";
+            stmt.executeUpdate(insertUserSql);
+        }
+
+        users = stmt.executeQuery(getUserSql);
+        if (users.next()) {
+            return users.getInt("UserId");
+        }
+
+        // If here, operation failed.
         return -1;
     }
-
 
     /**
      * Verify a user's login credentials.
@@ -133,8 +197,16 @@ public class Smarticulous {
      * @see <a href="https://crackstation.net/hashing-security.htm">How to Hash Passwords Properly</a>
      */
     public boolean verifyLogin(String username, String password) throws SQLException {
-        // TODO: Implement
-        return false;
+        Statement stmt = this.db.createStatement();
+
+        // Escape the username to prevent SQL injection
+        String getUserSql = "SELECT * FROM User WHERE Username='" + username + "'";
+
+        ResultSet users = stmt.executeQuery(getUserSql);
+        if (users.next()) {
+            return users.getString("Password").equals(password);
+        }
+        return false;  // Return false if user doesn't exist
     }
 
     // =========== Exercise Management =============
@@ -147,10 +219,41 @@ public class Smarticulous {
      * @throws SQLException
      */
     public int addExercise(Exercise exercise) throws SQLException {
-        // TODO: Implement
-        return -1;
-    }
+        Statement stmt = this.db.createStatement();
 
+        String getExercisesSql = "SELECT * FROM Exercise WHERE ExerciseId=" + exercise.id;
+
+        ResultSet exercises = stmt.executeQuery(getExercisesSql);
+        if (exercises.next()) { // exercise exists, return -1
+            return -1;
+        }
+
+        String insertExerciseSql = "INSERT INTO Exercise(ExerciseId, Name, DueDate) VALUES("
+            + exercise.id + ",'" + exercise.name + "'," + exercise.dueDate.getTime() + ")";
+        stmt.executeUpdate(insertExerciseSql);
+
+        exercises = stmt.executeQuery(getExercisesSql);
+        if (!exercises.next()) {
+            return -1;
+        }
+
+        // add questions as well
+        String insertQuestionSql = "INSERT INTO Question(ExerciseId, Name, Desc, Points) VALUES ";
+        for (Exercise.Question question: exercise.questions) {
+            insertQuestionSql = insertQuestionSql +
+                "\n(" + exercise.id + ",'" + question.name+ "','" + question.desc+ "'," + question.points + "),";
+        }
+        insertQuestionSql = insertQuestionSql.substring(0, insertQuestionSql.length()-1); // remove last comma
+        stmt.executeUpdate(insertQuestionSql);
+
+        String getExerciseQuestionsSql = "SELECT * FROM Question WHERE ExerciseId=" + exercise.id;
+        ResultSet questions = stmt.executeQuery(getExerciseQuestionsSql);
+        if (!questions.next() && exercise.questions.size() != 0) {
+            return -1;
+        }
+
+        return exercises.getInt("ExerciseId");
+    }
 
     /**
      * Return a list of all the exercises in the database.
@@ -161,8 +264,39 @@ public class Smarticulous {
      * @throws SQLException
      */
     public List<Exercise> loadExercises() throws SQLException {
-        // TODO: Implement
-        return null;
+        Statement stmt = this.db.createStatement();
+        String getExercisesSql = "SELECT * FROM Exercise ORDER BY ExerciseId";
+
+        ResultSet exercises = stmt.executeQuery(getExercisesSql);
+
+        List<Exercise> exercisesResult = new ArrayList<>();
+        while (exercises.next()) {
+
+            // parse exercise
+            int exerciseId = exercises.getInt("ExerciseId");
+            String name = exercises.getString("Name");
+            Date dueDate = new Date(exercises.getLong("DueDate"));
+
+            Exercise exercise = new Exercise(exerciseId, name, dueDate);
+
+            // get corresponding questions
+            Statement questionStmt = this.db.createStatement();
+            String questionSql = "SELECT * FROM Question WHERE ExerciseId = " + exerciseId;
+            ResultSet questions = questionStmt.executeQuery(questionSql);
+
+            // Create a list to store the questions
+            while (questions.next()) {
+                String questionName = questions.getString("Name");
+                String questionDesc = questions.getString("Desc");
+                int questionPoints = questions.getInt("Points");
+
+                exercise.addQuestion(questionName, questionDesc, questionPoints);
+            }
+
+            exercisesResult.add(exercise);
+        }
+
+        return exercisesResult;
     }
 
     // ========== Submission Storage ===============
@@ -178,7 +312,36 @@ public class Smarticulous {
      * @throws SQLException
      */
     public int storeSubmission(Submission submission) throws SQLException {
-        // TODO: Implement
+        // Check if the user exists
+        String getUserSql = "SELECT * FROM User WHERE Username='"+submission.user.username+"'";
+
+        Statement checkStmt = this.db.createStatement();
+
+        ResultSet users = checkStmt.executeQuery(getUserSql);
+        if (!users.next()) {
+            return -1;
+        }
+
+        // Insert or update the submission
+        String addSubmissionSql;
+        if (submission.id == -1) {
+            addSubmissionSql = "INSERT INTO Submission(UserId, ExerciseId, SubmissionTime) VALUES("+
+                users.getInt("UserId")+","+submission.exercise.id+","+ submission.submissionTime.getTime()+")";
+        } else {
+            addSubmissionSql = "INSERT INTO Submission(SubmissionId, UserId, ExerciseId, SubmissionTime) VALUES("+
+                submission.id+","+users.getInt("UserId")+","+submission.exercise.id+
+                ","+ submission.submissionTime.getTime()+")";
+        }
+
+        Statement stmt = this.db.createStatement();
+        stmt.executeUpdate(addSubmissionSql);
+
+        ResultSet lastInsertIdResult = stmt.executeQuery("SELECT last_insert_rowid()");
+        if (lastInsertIdResult.next()) {
+            return lastInsertIdResult.getInt(1); // return the ID of the inserted row
+        }
+
+        // If here, operation failed.
         return -1;
     }
 
@@ -204,8 +367,16 @@ public class Smarticulous {
      * @return
      */
     PreparedStatement getLastSubmissionGradesStatement() throws SQLException {
-        // TODO: Implement
-        return null;
+        String getLastSubmissionGradesSql =
+            "SELECT Submission.SubmissionId, QuestionGrade.QuestionId, QuestionGrade.Grade, Submission.SubmissionTime "+
+            "FROM Submission "+
+            "JOIN QuestionGrade ON Submission.SubmissionId = QuestionGrade.SubmissionId "+
+            "JOIN User ON Submission.UserId = User.UserId "+
+            "WHERE User.Username = ? AND Submission.ExerciseId = ? " +
+            "ORDER BY Submission.SubmissionTime DESC " +
+            "LIMIT ? ";
+
+        return this.db.prepareStatement(getLastSubmissionGradesSql);
     }
 
     /**
